@@ -4,6 +4,9 @@ from sklearn.datasets import make_blobs, make_circles
 from matplotlib import pyplot
 from pandas import DataFrame
 from sklearn.neighbors import kneighbors_graph
+import numpy as np
+import findspark
+findspark.init()
 
 
 conf = SparkConf().setAppName('appName').setMaster("local")
@@ -30,7 +33,7 @@ def blobs(n, n_extra, steps):
     grouped = df.groupby('label')
     for key, group in grouped:
         group.plot(ax=ax, kind='scatter', x='x', y='y', label=key, color=colors[key])
-    return edges, X
+    return edges, X_all
     pyplot.show()
 
 
@@ -160,7 +163,7 @@ def create_cluster(leader, clusters):
     # Create distinct
     return list(set(total))
 
-edges_all, coordinates = circles(100, 100, 20)
+edges_all, coordinates = circles(100, 20, 5)
 for edges in edges_all:
     RDD_edges = sc.parallelize(edges)
     MAPPED_EDGES = RDD_edges.map(lambda x: (x[0], [x[1], x[2]]))
