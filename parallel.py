@@ -10,25 +10,56 @@ conf = SparkConf().setAppName('appName').setMaster("local")
 sc = SparkContext(conf=conf)
 
 
-def blobs():
+def blobs(n, n_extra, steps):
     # generate 2d classification dataset
-    X, y = make_blobs(n_samples=100, centers=3, n_features=2)
-    # scatter plot, dots colored by class value
-    df = DataFrame(dict(x=X[:, 0], y=X[:, 1], label=y))
+    X_all, y_all = make_blobs(n_samples=n + n_extra, centers=3, n_features=2)
+    index = 0
+    edges = []
+
+    # Create subsets with size n + steps * number of iteration
+    for i in range(n, n + n_extra, steps):
+        X = X_all[:i]
+        y = y_all[:i]
+        edges.append(assign_neighbors(X, int(y.shape[0] / 3 * 1.1)))
+        weights = assign_weights(X, edges[index], int(y.shape[0] / 3 * 1.1))
+        index += 1
+
+    df = DataFrame(dict(x=X_all[:, 0], y=X_all[:, 1], label=y_all))
     colors = {0: 'red', 1: 'blue', 2: 'green'}
     fig, ax = pyplot.subplots()
     grouped = df.groupby('label')
     for key, group in grouped:
         group.plot(ax=ax, kind='scatter', x='x', y='y', label=key, color=colors[key])
+    return edges, X
     pyplot.show()
 
-def circles():
-    # generate 2d classification dataset
-    X, y = make_circles(n_samples=100, noise=0.05, factor=0.5)
-    edges = assign_neighbors(X, 10)
-    weights = assign_weights(X, edges, 10)
 
+def circles(n, n_extra, steps):
+    # generate 2d classification dataset
+    X, y = make_circles(n_samples=n, noise=0.05)
+    edges = []
+    edges.append(assign_neighbors(X, int(y.shape[0] / 2 * 1.1)))
+    weights = assign_weights(X, edges[0], int(y.shape[0] / 2 * 1.1))
+    index = 1
+
+    # Create subsets of size n + n_extra * number of iteration
+    for i in range(0, steps):
+        X2, y2 = make_circles(n_samples=n_extra, noise=0)
+        X = np.concatenate((X, X2))
+        y = np.concatenate((y, y2))
+        edges.append(assign_neighbors(X, int(y.shape[0] / 2 * 1.1)))
+        weights = assign_weights(X, edges[index], int(y.shape[0] / 2 * 1.1))
+        index += 1
+
+    # scatter plot, dots colored by class value
+    df = DataFrame(dict(x=X[:, 0], y=X[:, 1], label=y))
+    colors = {0: 'red', 1: 'blue'}
+    fig, ax = pyplot.subplots()
+    grouped = df.groupby('label')
+    for key, group in grouped:
+        group.plot(ax=ax, kind='scatter', x='x', y='y', label=key, color=colors[key])
     return edges, X
+    pyplot.show()
 
 
 def assign_neighbors(points, n):
@@ -129,72 +160,73 @@ def create_cluster(leader, clusters):
     # Create distinct
     return list(set(total))
 
-edges, coordinates = circles()
-RDD_edges = sc.parallelize(edges)
-MAPPED_EDGES = RDD_edges.map(lambda x: (x[0], [x[1], x[2]]))
-MAPPED_EDGES = MAPPED_EDGES.combineByKey(
-        lambda a: [a],
-        combineValues,
-        lambda a, b: a.extend(b))
+edges_all, coordinates = circles(100, 100, 20)
+for edges in edges_all:
+    RDD_edges = sc.parallelize(edges)
+    MAPPED_EDGES = RDD_edges.map(lambda x: (x[0], [x[1], x[2]]))
+    MAPPED_EDGES = MAPPED_EDGES.combineByKey(
+            lambda a: [a],
+            combineValues,
+            lambda a, b: a.extend(b))
 
-clustering = {}
-final = []
+    clustering = {}
+    final = []
 
-while MAPPED_EDGES.count() > 2:
+    while MAPPED_EDGES.count() > 2:
 
-    # RDD_nearest = MAPPED_EDGES.reduceByKey(lambda a, b: a if a[1] < b[1] else b).sortByKey()
-
-
-    RDD_nearest = MAPPED_EDGES.map(lambda values: (values[0], smallest(values[1])))
-    nearest = RDD_nearest.collect()
-    nearestDict = {neighbor[0]: neighbor[1] for neighbor in nearest}
-    sc.broadcast(nearestDict)
-    RDD_contracted = MAPPED_EDGES.map(map_contraction)
-
-    contractedValues = RDD_contracted.collect()
-    leaderDict = {leaderNodePair[1][0]: leaderNodePair[0] for leaderNodePair in contractedValues}
-    sc.broadcast(leaderDict)
-
-    RDD = RDD_contracted.reduceByKey(reduce_contraction)
-
-    MAPPED_EDGES = RDD.map(lambda pair: pair[1])
-
-    for key in leaderDict.keys():
-        if leaderDict[key] in clustering:
-            clustering[leaderDict[key]].append(key)
-        else:
-            clustering[leaderDict[key]] = [key]
-
-    result = MAPPED_EDGES.collect()
-    if MAPPED_EDGES.count() <= 2:
-        final.extend(result)
+        # RDD_nearest = MAPPED_EDGES.reduceByKey(lambda a, b: a if a[1] < b[1] else b).sortByKey()
 
 
-clusters = []
-for key in final:
-    cluster = create_cluster(key[0], clustering)
-    print(cluster)
-    clusters.append(cluster)
+        RDD_nearest = MAPPED_EDGES.map(lambda values: (values[0], smallest(values[1])))
+        nearest = RDD_nearest.collect()
+        nearestDict = {neighbor[0]: neighbor[1] for neighbor in nearest}
+        sc.broadcast(nearestDict)
+        RDD_contracted = MAPPED_EDGES.map(map_contraction)
 
-x = []
-y = []
-ids = []
-cluster_id = 0
-for cluster in clusters:
-    for index in cluster:
-        x.append(coordinates[index][0])
-        y.append(coordinates[index][1])
-        ids.append(cluster_id)
-    cluster_id = cluster_id + 1
+        contractedValues = RDD_contracted.collect()
+        leaderDict = {leaderNodePair[1][0]: leaderNodePair[0] for leaderNodePair in contractedValues}
+        sc.broadcast(leaderDict)
+
+        RDD = RDD_contracted.reduceByKey(reduce_contraction)
+
+        MAPPED_EDGES = RDD.map(lambda pair: pair[1])
+
+        for key in leaderDict.keys():
+            if leaderDict[key] in clustering:
+                clustering[leaderDict[key]].append(key)
+            else:
+                clustering[leaderDict[key]] = [key]
+
+        result = MAPPED_EDGES.collect()
+        if MAPPED_EDGES.count() <= 2:
+            final.extend(result)
+
+
+    clusters = []
+    for key in final:
+        cluster = create_cluster(key[0], clustering)
+        print(cluster)
+        clusters.append(cluster)
+
+    x = []
+    y = []
+    ids = []
+    cluster_id = 0
+    for cluster in clusters:
+        for index in cluster:
+            x.append(coordinates[index][0])
+            y.append(coordinates[index][1])
+            ids.append(cluster_id)
+        cluster_id = cluster_id + 1
 
 
 
-# scatter plot, dots colored by class value
-df = DataFrame(dict(x=x, y=y, label=ids))
-colors = {0: 'red', 1: 'blue', 2: 'yellow', 3: 'black', 4: 'green', 5: 'brown', 6: 'white'}
-fig, ax = pyplot.subplots()
-grouped = df.groupby('label')
-for key, group in grouped:
-    group.plot(ax=ax, kind='scatter', x='x', y='y', label=key, color=colors[key])
+    # scatter plot, dots colored by class value
+    df = DataFrame(dict(x=x, y=y, label=ids))
+    colors = {0: 'red', 1: 'blue', 2: 'yellow', 3: 'black', 4: 'green', 5: 'brown', 6: 'white'}
+    fig, ax = pyplot.subplots()
+    grouped = df.groupby('label')
+    for key, group in grouped:
+        group.plot(ax=ax, kind='scatter', x='x', y='y', label=key, color=colors[key])
 
-pyplot.show()
+    pyplot.show()
