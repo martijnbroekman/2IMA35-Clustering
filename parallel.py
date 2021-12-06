@@ -8,7 +8,6 @@ import numpy as np
 import findspark
 findspark.init()
 
-
 conf = SparkConf().setAppName('appName').setMaster("local")
 sc = SparkContext(conf=conf)
 
@@ -27,19 +26,12 @@ def blobs(n, n_extra, steps):
         weights = assign_weights(X, edges[index], int(y.shape[0] / 3 * 1.1))
         index += 1
 
-    df = DataFrame(dict(x=X_all[:, 0], y=X_all[:, 1], label=y_all))
-    colors = {0: 'red', 1: 'blue', 2: 'green'}
-    fig, ax = pyplot.subplots()
-    grouped = df.groupby('label')
-    for key, group in grouped:
-        group.plot(ax=ax, kind='scatter', x='x', y='y', label=key, color=colors[key])
     return edges, X_all
-    pyplot.show()
 
 
 def circles(n, n_extra, steps):
     # generate 2d classification dataset
-    X, y = make_circles(n_samples=n, noise=0.05)
+    X, y = make_circles(n_samples=n, noise=0.05, factor=0.5)
     edges = []
     edges.append(assign_neighbors(X, int(y.shape[0] / 2 * 1.1)))
     weights = assign_weights(X, edges[0], int(y.shape[0] / 2 * 1.1))
@@ -54,15 +46,7 @@ def circles(n, n_extra, steps):
         weights = assign_weights(X, edges[index], int(y.shape[0] / 2 * 1.1))
         index += 1
 
-    # scatter plot, dots colored by class value
-    df = DataFrame(dict(x=X[:, 0], y=X[:, 1], label=y))
-    colors = {0: 'red', 1: 'blue'}
-    fig, ax = pyplot.subplots()
-    grouped = df.groupby('label')
-    for key, group in grouped:
-        group.plot(ax=ax, kind='scatter', x='x', y='y', label=key, color=colors[key])
     return edges, X
-    pyplot.show()
 
 
 def assign_neighbors(points, n):
@@ -163,7 +147,7 @@ def create_cluster(leader, clusters):
     # Create distinct
     return list(set(total))
 
-edges_all, coordinates = circles(100, 20, 5)
+edges_all, coordinates = circles(100, 20, 3)
 for edges in edges_all:
     RDD_edges = sc.parallelize(edges)
     MAPPED_EDGES = RDD_edges.map(lambda x: (x[0], [x[1], x[2]]))
@@ -204,6 +188,7 @@ for edges in edges_all:
         if MAPPED_EDGES.count() <= 2:
             final.extend(result)
 
+    print("finised iteration")
 
     clusters = []
     for key in final:
