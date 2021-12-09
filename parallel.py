@@ -5,6 +5,7 @@ from matplotlib import pyplot
 from pandas import DataFrame
 from sklearn.neighbors import kneighbors_graph
 import numpy as np
+from itertools import combinations
 import findspark
 findspark.init()
 
@@ -12,21 +13,21 @@ conf = SparkConf().setAppName('appName').setMaster("local")
 sc = SparkContext(conf=conf)
 
 
-def blobs(n, n_extra, steps):
+def blobs(n, n_extra, steps, blobs):
     # generate 2d classification dataset
-    X_all, y_all = make_blobs(n_samples=n + n_extra, centers=3, n_features=2)
+    X_all, y_all = make_blobs(n_samples=10**(n_extra), centers=blobs, n_features=2)
     index = 0
     edges = []
 
     # Create subsets with size n + steps * number of iteration
-    for i in range(n, n + n_extra, steps):
+    for i in np.logspace(n, n_extra, steps).astype(int):
         X = X_all[:i]
         y = y_all[:i]
-        edges.append(assign_neighbors(X, int(y.shape[0] / 3 * 1.1)))
-        weights = assign_weights(X, edges[index], int(y.shape[0] / 3 * 1.1))
+        edges.append(assign_neighbors(X, int(y.shape[0] / blobs * 1.1)))
+        weights = assign_weights(X, edges[index], int(y.shape[0] / blobs * 1.1))
         index += 1
 
-    return edges, X_all
+    return edges, X_all, y_all
 
 
 def circles(n, n_extra, steps):
@@ -37,9 +38,10 @@ def circles(n, n_extra, steps):
     weights = assign_weights(X, edges[0], int(y.shape[0] / 2 * 1.1))
     index = 1
 
+    number_steps = int((n + n_extra)/steps)
     # Create subsets of size n + n_extra * number of iteration
-    for i in range(0, steps):
-        X2, y2 = make_circles(n_samples=n_extra, noise=0)
+    for i in range(number_steps):
+        X2, y2 = make_circles(n_samples=n + i * steps, noise=0)
         X = np.concatenate((X, X2))
         y = np.concatenate((y, y2))
         edges.append(assign_neighbors(X, int(y.shape[0] / 2 * 1.1)))
@@ -147,74 +149,132 @@ def create_cluster(leader, clusters):
     # Create distinct
     return list(set(total))
 
-edges_all, coordinates = circles(100, 20, 3)
-for edges in edges_all:
-    RDD_edges = sc.parallelize(edges)
-    MAPPED_EDGES = RDD_edges.map(lambda x: (x[0], [x[1], x[2]]))
-    MAPPED_EDGES = MAPPED_EDGES.combineByKey(
-            lambda a: [a],
-            combineValues,
-            lambda a, b: a.extend(b))
+begin_n = 1 # 10^1
+number_clusters = 5
+steps = 50
+total_n = 5 # 10^5
+number_iterations = 100
+counter_true_cluster = dict()
+sum_recall = dict()
+sum_precision = dict()
+sum_F = dict()
 
-    clustering = {}
-    final = []
+for number_points in np.logspace(begin_n, total_n, steps).astype(int):
+    counter_true_cluster[number_points] = 0
+    sum_recall[number_points] = 0
+    sum_precision[number_points] = 0
+    sum_F[number_points] = 0
+for boot in range(number_iterations):
+    print(boot)
+    print(counter_true_cluster)
+    print(sum_precision)
+    print(sum_recall)
+    print(sum_F)
+    edges_all, coordinates, y_true = blobs(begin_n, total_n, steps, number_clusters)
+    n = np.logspace(begin_n, total_n, steps).astype(int)
+    index_n = 0
+    for edges in edges_all:
+        RDD_edges = sc.parallelize(edges)
+        MAPPED_EDGES = RDD_edges.map(lambda x: (x[0], [x[1], x[2]]))
+        MAPPED_EDGES = MAPPED_EDGES.combineByKey(
+                lambda a: [a],
+                combineValues,
+                lambda a, b: a.extend(b))
 
-    while MAPPED_EDGES.count() > 2:
+        clustering = {}
+        final = []
 
-        # RDD_nearest = MAPPED_EDGES.reduceByKey(lambda a, b: a if a[1] < b[1] else b).sortByKey()
+        while MAPPED_EDGES.count() > number_clusters:
 
-
-        RDD_nearest = MAPPED_EDGES.map(lambda values: (values[0], smallest(values[1])))
-        nearest = RDD_nearest.collect()
-        nearestDict = {neighbor[0]: neighbor[1] for neighbor in nearest}
-        sc.broadcast(nearestDict)
-        RDD_contracted = MAPPED_EDGES.map(map_contraction)
-
-        contractedValues = RDD_contracted.collect()
-        leaderDict = {leaderNodePair[1][0]: leaderNodePair[0] for leaderNodePair in contractedValues}
-        sc.broadcast(leaderDict)
-
-        RDD = RDD_contracted.reduceByKey(reduce_contraction)
-
-        MAPPED_EDGES = RDD.map(lambda pair: pair[1])
-
-        for key in leaderDict.keys():
-            if leaderDict[key] in clustering:
-                clustering[leaderDict[key]].append(key)
-            else:
-                clustering[leaderDict[key]] = [key]
-
-        result = MAPPED_EDGES.collect()
-        if MAPPED_EDGES.count() <= 2:
-            final.extend(result)
-
-    print("finised iteration")
-
-    clusters = []
-    for key in final:
-        cluster = create_cluster(key[0], clustering)
-        print(cluster)
-        clusters.append(cluster)
-
-    x = []
-    y = []
-    ids = []
-    cluster_id = 0
-    for cluster in clusters:
-        for index in cluster:
-            x.append(coordinates[index][0])
-            y.append(coordinates[index][1])
-            ids.append(cluster_id)
-        cluster_id = cluster_id + 1
+            # RDD_nearest = MAPPED_EDGES.reduceByKey(lambda a, b: a if a[1] < b[1] else b).sortByKey()
 
 
+            RDD_nearest = MAPPED_EDGES.map(lambda values: (values[0], smallest(values[1])))
+            nearest = RDD_nearest.collect()
+            nearestDict = {neighbor[0]: neighbor[1] for neighbor in nearest}
+            sc.broadcast(nearestDict)
+            RDD_contracted = MAPPED_EDGES.map(map_contraction)
 
-    # scatter plot, dots colored by class value
-    df = DataFrame(dict(x=x, y=y, label=ids))
-    colors = {0: 'red', 1: 'blue', 2: 'yellow', 3: 'black', 4: 'green', 5: 'brown', 6: 'white'}
-    fig, ax = pyplot.subplots()
-    grouped = df.groupby('label')
-    for key, group in grouped:
-        group.plot(ax=ax, kind='scatter', x='x', y='y', label=key, color=colors[key])
+            contractedValues = RDD_contracted.collect()
+            leaderDict = {leaderNodePair[1][0]: leaderNodePair[0] for leaderNodePair in contractedValues}
+            sc.broadcast(leaderDict)
 
-    pyplot.show()
+            RDD = RDD_contracted.reduceByKey(reduce_contraction)
+
+            MAPPED_EDGES = RDD.map(lambda pair: pair[1])
+
+            for key in leaderDict.keys():
+                if leaderDict[key] in clustering:
+                    clustering[leaderDict[key]].append(key)
+                else:
+                    clustering[leaderDict[key]] = [key]
+
+            result = MAPPED_EDGES.collect()
+            if MAPPED_EDGES.count() <= number_clusters:
+                final.extend(result)
+
+        print(n[index_n])
+        if len(final) == number_clusters:
+            counter_true_cluster[n[index_n]] += 1
+
+        clusters = []
+        pairs = []
+        p = 0
+        for key in final:
+            cluster = create_cluster(key[0], clustering)
+            print(cluster)
+            clusters.append(cluster)
+            # Create sets of all possible combinations
+            pairs.extend(list(combinations(cluster, 2)))
+            p += len(cluster) * (len(cluster) - 1) / 2
+
+        # Look to only one true cluster and find all possible combinations and create sets of these
+        pairs_true = []
+        q = 0
+        for ii in np.unique(y_true[:n[index_n]]):
+            cluster_true = (np.where(y_true[:n[index_n]] == ii)[0])
+            pairs_true.extend(list(combinations(cluster_true, 2)))
+            q += len(cluster_true) * (len(cluster_true) - 1) / 2
+
+        intersect = len(list(filter(lambda x:x in pairs, pairs_true))) # True positives
+        not_in_pairs = len(list(set(pairs_true) - set(pairs))) # False negatives
+        not_in_true = len(list(set(pairs) - set(pairs_true))) # False positives
+        precision = intersect / p
+        recall = intersect / q
+        F = 2 * intersect / (2 * intersect + not_in_pairs + not_in_true)
+        print(precision, recall, F)
+        sum_precision[n[index_n]] += precision
+        sum_recall[n[index_n]] += recall
+        sum_F[n[index_n]] += F
+        index_n += 1
+
+        x = []
+        y = []
+        ids = []
+        cluster_id = 0
+        for cluster in clusters:
+            for index in cluster:
+                x.append(coordinates[index][0])
+                y.append(coordinates[index][1])
+                ids.append(cluster_id)
+            cluster_id = cluster_id + 1
+        print(y)
+
+
+        # scatter plot, dots colored by class value
+        df = DataFrame(dict(x=x, y=y, label=ids))
+        colors = {0: 'red', 1: 'blue', 2: 'yellow', 3: 'black', 4: 'green', 5: 'brown', 6: 'white'}
+        fig, ax = pyplot.subplots()
+        grouped = df.groupby('label')
+        for key, group in grouped:
+            group.plot(ax=ax, kind='scatter', x='x', y='y', label=key, color=colors[key])
+
+        pyplot.show()
+
+print(counter_true_cluster)
+print(sum_precision)
+print(sum_recall)
+print(sum_F)
+print({k: v / number_iterations for k, v in sum_precision.items()})
+print({k: v / number_iterations for k, v in sum_recall.items()})
+print({k: v / number_iterations for k, v in sum_F.items()})
