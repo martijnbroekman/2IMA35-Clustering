@@ -192,7 +192,7 @@ for boot in range(number_iterations):
     print(sum_recall)
     print(sum_F)
     print(error)
-    edges_all, coordinates, y_true = moons(begin_n, total_n, steps)
+    edges_all, coordinates, y_true = blobs(begin_n, total_n, steps, number_clusters)
     n = np.logspace(begin_n, total_n, steps).astype(int)
     index_n = 0
     for edges in edges_all:
@@ -307,4 +307,5 @@ print(error)
 print({k: v / number_iterations for k, v in sum_precision.items()})
 print({k: v / number_iterations for k, v in sum_recall.items()})
 print({k: v / number_iterations for k, v in sum_F.items()})
+
 
